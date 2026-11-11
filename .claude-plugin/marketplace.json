@@ -1,0 +1,13 @@
+{
+  "name": "waca-loop",
+  "owner": {
+    "name": "WACA Loop contributors"
+  },
+  "plugins": [
+    {
+      "source": "./plugins/waca-loop",
+      "name": "waca-loop-guard",
+      "description": "WACA Loop の運用ルール（毎ターン台帳記録）と G1〜G5 ガードを全リポジトリへ配る"
+    }
+  ]
+}

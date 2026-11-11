@@ -1,0 +1,43 @@
+# 記入例: 架空の組織「サンプル協会」の組織設定。
+# 試すだけなら、このファイルをそのまま使える:  ORG_CONFIG=sample/org.toml
+# 自分の組織で使うときは org.example.toml をコピーして書き換える。
+
+[org]
+name = "サンプル協会"
+workspace_domains = ["example.org"]
+
+[units]
+org = "org"
+steward = "steward"
+board = "board"
+owner = "owner"
+export_admin = ["export_admin"]
+
+[guard]
+org_keywords = [
+  "サンプル協会", "協会", "会員", "事務局", "理事会", "定例研修", "研修", "教材",
+  "waca loop", "waca-loop",
+]
+non_org_signals = [
+  "大学", "学部", "学科", "ゼミ", "講義", "学生", "学籍", "履修",
+  "私事", "私用", "プライベート", "個人的な", "家族", "確定申告", "副業",
+]
+
+[unit_map]
+"理事会" = "board"
+"事務局" = "secretariat"
+"事業部門" = "business"
+"会員部門" = "membership"
+"教材開発部" = "kyozai"
+"研修部" = "training"
+"会員部" = "members"
+"委員会A" = "c_a"
+"広報委員会" = "c_pr"
+
+[person_ids]
+
+[pii]
+# 組織固有の会員番号などの列名。個人データとして検出・遮断する（一般的な名前は組み込み済み）
+id_column_names = ["サンプル番号"]
+# 組織固有の会員番号の形式（正規表現）。本文中に現れたら [会員番号] に置き換える
+id_value_patterns = ["SMP[- ]?\\d{6,}"]

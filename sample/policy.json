@@ -1,0 +1,18 @@
+[
+  {"row_id": "FLOOR-01", "scope_unit": "org", "is_floor": true,
+   "line": "生の個人情報を、学習に使われる可能性のある AI ツールに入力する",
+   "effect": "氏名・連絡先などの列を削除するか仮名化してから扱う", "trigger_kinds": ["pii"]},
+  {"row_id": "FLOOR-02", "scope_unit": "org", "is_floor": true,
+   "line": "会員名簿の全件や研修資料の全量など、組織の中核資産を丸ごと AI に渡す",
+   "effect": "必要な部分だけに絞り、加工してから扱う", "trigger_kinds": ["core_asset"]},
+  {"row_id": "ORG-1", "scope_unit": "org", "level": 2,
+   "line": "公開済みの資料やお知らせを要約・翻訳する",
+   "effect": "そのまま利用してよい。公開前の情報を混ぜないこと", "trigger_kinds": ["public"]},
+  {"row_id": "ORG-2", "scope_unit": "org", "level": 1,
+   "line": "会員アンケートの結果を AI で集計・分析する",
+   "effect": "個人を特定できる列を削除・仮名化してから行う。生データの全量は渡さない",
+   "trigger_kinds": ["confidential"]},
+  {"row_id": "SEC-1", "scope_unit": "secretariat", "level": 1,
+   "line": "会員からの問い合わせへの回答案を作る",
+   "effect": "公開情報をもとに案を作り、送信前に担当者が確認する", "trigger_kinds": ["internal"]}
+]

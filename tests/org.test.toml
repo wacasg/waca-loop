@@ -1,0 +1,48 @@
+# テスト専用の組織設定（架空の「サンプル協会」）。tests/conftest.py が ORG_CONFIG に指定する。
+# 開発者の手元に org.toml があっても、テストはこちらだけを読む。
+
+[org]
+name = "サンプル協会"
+workspace_domains = ["example.org", "example.net"]
+
+[units]
+org = "org"
+steward = "steward"
+board = "board"
+owner = "owner"
+export_admin = ["export_admin"]
+
+[guard]
+org_keywords = [
+  "サンプル協会", "定例研修", "協会", "会員", "事務局", "waca-loop", "waca loop",
+  "教材", "研修", "テキスト", "受講", "講座", "会報", "sfaq", "edu",
+]
+non_org_signals = [
+  "大学", "学部", "学科", "ゼミ", "講義", "学生", "学籍", "履修",
+  "私事", "私用", "プライベート", "個人的な", "家族", "確定申告", "副業",
+]
+
+# シート上の名前 → ユニットID（scripts/sync_persons_from_sheet.py・sync_policy_from_sheet.py）
+[unit_map]
+"理事会" = "board"
+"事務局" = "secretariat"
+"技術部" = "tech"
+"部門A" = "div_a"
+"部門B" = "div_b"
+"部門C" = "div_c"
+"教材開発部" = "kyozai"
+"会員部" = "members"
+"広報部" = "pr"
+"委員会D" = "c_d"
+"委員会A" = "c_a"
+"委員会B" = "c_b"
+"委員会C" = "c_c"
+
+# OAuth で紐づけ済みの人の person_id を固定する（表示名 → person_id）
+[person_ids]
+"山田一郎" = "p_yamada"
+
+# 組織固有の会員番号などの列名（個人データとして扱う）
+[pii]
+id_column_names = ["サンプル番号"]
+id_value_patterns = ["SMP[- ]?\\d{6,}"]

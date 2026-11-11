@@ -1,0 +1,41 @@
+# Secrets / local state
+.env
+.env.*
+!.env.example
+.tokens/
+*.key.json
+service-account*.json
+.claude/settings.local.json
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# Editor / OS
+.DS_Store
+.idea/
+.vscode/
+
+# Local-only working files (name them *_local / *_local.*) and exported data
+*_local/
+*_local.*
+*.jsonl
+
+# OAuth トークン（symlink にしている場合も含めて除外）
+.tokens*
+
+# Organization profile (copy of org.example.toml with real values)
+/org.toml
+/members.json
+
+# 公開前チェックの禁止語リスト（組織名・人名など。手元にだけ置く）
+/.public-denylist

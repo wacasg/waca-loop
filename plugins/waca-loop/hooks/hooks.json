@@ -1,0 +1,38 @@
+{
+  "hooks": {
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          { "type": "command", "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/ledger-reminder.sh\"" }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          { "type": "command", "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/guard-bq-write.sh\"" }
+        ]
+      },
+      {
+        "matcher": "Edit|Write|MultiEdit",
+        "hooks": [
+          { "type": "command", "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/guard-ddl-remind.sh\"" }
+        ]
+      },
+      {
+        "matcher": "mcp__.*(gmail|slack|drive|gdocs|gsheets|gslides|send_message|create_file|share_file|upload)",
+        "hooks": [
+          { "type": "command", "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/guard-pii-egress.sh\"" }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          { "type": "command", "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/guard-stop-gates.sh\"" }
+        ]
+      }
+    ]
+  }
+}

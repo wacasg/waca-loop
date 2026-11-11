@@ -1,0 +1,68 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "waca-loop"
+version = "1.0.0"
+description = "WACA Loop — an organizational AI-governance engine served as an MCP server (org vocabulary, AI-usage ledger, ACL-preserving retrieval, AI-policy delivery)."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "Apache-2.0" }
+authors = [{ name = "一般社団法人ウェブ解析士協会 (WACA)" }]
+classifiers = [
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3",
+]
+dependencies = [
+    # Upper-bounded on purpose: the AS trusts the SDK to generate client_id server-side
+    # (uuid4, ignoring client-supplied values). If a future major honored client-supplied
+    # client_id, /register would become a redirect_uri-overwrite primitive (account takeover)
+    # — re-audit auth/as_provider.py + auth/client_store.py before raising the bound.
+    "mcp>=1.2.0,<2",              # official Model Context Protocol SDK (server.py)
+    # Hosted mode runs the ASGI app itself (server.py:serve_http) instead of mcp.run(), so uvicorn
+    # is a direct dependency, not just the SDK's. Starlette still arrives with `mcp` — it is
+    # imported only by auth/asgi.py's type-free ASGI plumbing and by the tests' TestClient.
+    "uvicorn>=0.30",              # ASGI server for the Cloud Run entry point
+    "google-cloud-bigquery>=3.25", # BigQuery data plane (terms / persons / usage_log)
+    "google-auth>=2.30",          # OAuth identity (sub) + BQ credentials
+    "google-auth-oauthlib>=1.2",  # installed-app OAuth flow (§5)
+    "pydantic>=2.7",              # typed config + models
+    "pydantic-settings>=2.3",     # env -> Settings
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+    "ruff>=0.5",
+]
+
+[project.scripts]
+waca-loop = "waca_loop.server:main"
+waca-loop-serve = "waca_loop.server:serve_http"
+# 改善要望をシートへ映す夜間ジョブ (SPEC_improvement_requests §5)。scripts/ はコンテナに
+# 入らないので、定期実行の入口はパッケージ側に置く。
+waca-loop-mirror = "waca_loop.improvement.sheet_mirror:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# worktree でも「その worktree の src/」を優先して import する（editable install は主チェックアウトの
+# src を指すため、PYTHONPATH=src を付け忘れると別のコードをテストしてしまう）。
+pythonpath = ["src"]
+asyncio_mode = "auto"
+
+[tool.ruff]
+line-length = 100
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+
+[tool.ruff.lint.per-file-ignores]
+# The 4D-signature system prompt is fixed CJK prose injected verbatim (§6);
+# wrapping a rule line would change the text the client receives.
+"src/waca_loop/signature/prompt.py" = ["E501"]

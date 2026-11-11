@@ -1,0 +1,16 @@
+{
+  "_comment": "名簿ファイルのテンプレート。members.json という名前でコピーし、CHANGE-ME をすべて書き換えてから python scripts/register_members.py members.json を実行する。記入例は sample/members.json。",
+  "members": [
+    {
+      "display_name": "CHANGE-ME（WACA Loop の管理者の氏名）",
+      "email": "CHANGE-ME@CHANGE-ME.example",
+      "units": ["CHANGE-ME"],
+      "roles": ["steward", "owner"]
+    },
+    {
+      "display_name": "CHANGE-ME（メンバーの氏名）",
+      "email": "CHANGE-ME@CHANGE-ME.example",
+      "units": ["CHANGE-ME"]
+    }
+  ]
+}

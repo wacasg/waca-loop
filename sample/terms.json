@@ -1,0 +1,17 @@
+[
+  {"term_id": "t_sample_org", "term": "サンプル協会", "reading": "サンプルキョウカイ",
+   "definition": "会員向けの研修と情報提供を行う架空の協会。WACA Loop の記入例に使う組織。",
+   "basis": "組織の正式名称", "scope": {"tier": "org", "audience": "public", "sensitivity": "normal"}},
+  {"term_id": "t_sample_number", "term": "サンプル番号", "reading": "サンプルバンゴウ",
+   "definition": "サンプル協会が会員一人ひとりに振る通し番号。個人を特定できる情報として扱う。",
+   "basis": "会員管理規程", "scope": {"tier": "org", "audience": "internal", "sensitivity": "normal"}},
+  {"term_id": "t_teirei_kenshu", "term": "定例研修", "reading": "テイレイケンシュウ",
+   "definition": "会員向けに毎月開く研修。受講記録は会員部が管理する。",
+   "basis": "研修規程", "scope": {"tier": "org", "audience": "internal", "sensitivity": "normal"}},
+  {"term_id": "t_jimukyoku", "term": "事務局", "reading": "ジムキョク",
+   "definition": "会員対応・研修運営・経理を担当する部署。問い合わせの一次窓口。",
+   "basis": "組織図", "scope": {"tier": "org", "audience": "internal", "sensitivity": "normal"}},
+  {"term_id": "t_kyozai", "term": "教材開発部", "reading": "キョウザイカイハツブ",
+   "definition": "研修のテキストと資料を作成・改訂する部署。",
+   "basis": "組織図", "scope": {"tier": "org", "audience": "internal", "sensitivity": "normal"}}
+]

@@ -1,0 +1,30 @@
+# Keep the image to runtime essentials — and NEVER ship secrets/tokens.
+# (Defense in depth: the Dockerfile COPYs only pyproject/README/LICENSE/NOTICE/src, so nothing
+# below should ever be reachable — keep it that way if the COPY lines change.)
+.env
+.env*
+.tokens/
+*.pem
+*-key.*
+.venv/
+.git/
+.github/
+.claude/
+.mcp.json
+tests/
+docs/
+sql/
+scripts/
+*.json
+__pycache__/
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+Makefile
+# Local-only working files and exported data (defense in depth)
+*_local/
+*_local.*
+*.jsonl
+org.toml
+members.json
+.public-denylist

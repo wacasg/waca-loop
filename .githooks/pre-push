@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+set -euo pipefail
+ROOT="$(git rev-parse --show-toplevel)"
+cd "$ROOT"
+PY="python3"
+if [ -x "$ROOT/.venv/bin/python" ]; then
+  PY="$ROOT/.venv/bin/python"
+fi
+if ! "$PY" scripts/check_public_content.py; then
+  echo
+  echo "push を中止した。上の内容を直してから push し直すこと。"
+  exit 1
+fi
+if [ ! -f "$ROOT/.public-denylist" ] && [ -z "${PUBLIC_DENYLIST:-}" ]; then
+  echo "注意: .public-denylist が無いため、組織固有の語は検査していない。"
+fi

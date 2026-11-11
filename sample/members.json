@@ -1,0 +1,32 @@
+{
+  "_comment": "記入例: 架空の組織「サンプル協会」の名簿（sample/org.toml と組で使う）。人物・アドレスはすべて架空。",
+  "members": [
+    {
+      "display_name": "山田 太郎",
+      "email": "taro.yamada@example.org",
+      "units": ["secretariat"],
+      "roles": ["steward", "owner"]
+    },
+    {
+      "display_name": "佐藤 花子",
+      "email": "hanako.sato@example.org",
+      "units": ["kyozai", "business"]
+    },
+    {
+      "display_name": "鈴木 一郎",
+      "email": "ichiro.suzuki@example.org",
+      "units": ["members", "membership"],
+      "roles": ["steward"]
+    },
+    {
+      "display_name": "高橋 次郎",
+      "email": "jiro.takahashi@example.org",
+      "units": ["board"],
+      "roles": ["export_admin"]
+    },
+    {
+      "display_name": "田中 三郎",
+      "units": ["c_a", "business"]
+    }
+  ]
+}
