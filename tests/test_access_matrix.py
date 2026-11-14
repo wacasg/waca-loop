@@ -121,7 +121,9 @@ def test_the_roster_and_find_expert_stay_outside_break_glass():
     # **構造で**締める。`find_expert` の除外が「`_clamp_k` を reason 無しで呼んでいる」
     # ことだけに乗っていると、他の5ツールと同じ流儀で reason を通す改修が入った瞬間に
     # 3 → 30 が黙って開く。
-    assert _NO_BREAK_GLASS == frozenset({"persons", "find_expert"})
+    # export_my_usage(v1.1.0)は本人の記録しか返さない書き出しで、超過させる理由が無い。
+    # 締める側への追加なので、対象外の集合が広がっただけ（緩めてはいない）。
+    assert _NO_BREAK_GLASS == frozenset({"persons", "find_expert", "export_my_usage"})
 
     src = inspect.getsource(ServerContext.lookup_terms)
     assert 'min(self._clamp_k(k, "persons"), _K_CAPS["persons"])' in src

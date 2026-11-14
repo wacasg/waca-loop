@@ -45,7 +45,12 @@ class UsageSummaryReader(Protocol):
     """Summary-only ledger reader used by PolicyWorkbench."""
 
     def recent_summaries_for_actor(
-        self, viewer: Viewer, actor_id: str, *, limit: int = 20
+        self,
+        viewer: Viewer,
+        actor_id: str,
+        *,
+        limit: int = 20,
+        not_before: datetime | None = None,
     ) -> list[UsageSummary]: ...
 
 
@@ -57,6 +62,8 @@ class WorkbenchRequest:
     goal_hint_summary: str | None = None
     artifact_type: str | None = None
     max_logs: int = 20
+    # Bind floor (SPEC_export_my_usage §4.1): only summaries at/after this moment are used.
+    logs_not_before: datetime | None = None
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -124,7 +131,7 @@ class PolicyWorkbench:
 
     def start(self, request: WorkbenchRequest) -> WorkbenchResponse:
         max_logs = min(max(int(request.max_logs), 0), 20)
-        summaries = self._usage_summaries(request.viewer, max_logs)
+        summaries = self._usage_summaries(request.viewer, max_logs, request.logs_not_before)
         rows = self._adoption_rows(request.viewer)
         floors = self._floors(request.viewer)
         selected = _select_row(rows, request.goal_hint_summary, summaries)
@@ -151,12 +158,18 @@ class PolicyWorkbench:
             diagnostic=_diagnostic(summaries, rows, self._policy_guides, self._adoption_map),
         )
 
-    def _usage_summaries(self, viewer: Viewer, limit: int) -> list[UsageSummary]:
+    def _usage_summaries(
+        self, viewer: Viewer, limit: int, not_before: datetime | None = None
+    ) -> list[UsageSummary]:
         if self._usage_reader is None or viewer.person_id is None or limit <= 0:
             return []
-        return self._usage_reader.recent_summaries_for_actor(
-            viewer, viewer.person_id, limit=limit
+        got = self._usage_reader.recent_summaries_for_actor(
+            viewer, viewer.person_id, limit=limit, not_before=not_before
         )
+        if not_before is None:
+            return got
+        # §4.1: second gate on the bind floor, in-process.
+        return [s for s in got if s.occurred_at >= not_before]
 
     def _adoption_rows(self, viewer: Viewer) -> list[AdoptionRow]:
         if self._adoption_map is None:

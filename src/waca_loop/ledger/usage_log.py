@@ -131,6 +131,35 @@ _WITHDRAWN_FIELDS = (
 #: trailed fail-closed with the ``log_id``, so this pairing always has a name against it.
 _WITHDRAWN_DETAIL_FIELDS = (*_WITHDRAWN_FIELDS, "reason", "summary")
 
+#: Columns :meth:`rows_for_actor` returns, on BOTH stores — the caller's own ledger export
+#: (``export_my_usage``). Summary-level only: no ``actor_raw``, no ``request_id``, no
+#: ``status``, and — by the ledger's design (§2.2③ / T6) — nothing verbatim exists to return.
+#: ``actor_id`` is carried so the server can re-check ownership in-process (§3.3 の二重化);
+#: the tool strips it from each row because the whole export belongs to one person anyway.
+#: ``withdrawn`` is a flag, not a filter: a person who withdrew a row still sees that it
+#: existed, but its ``summary`` comes back as ``None`` — from SQL on the BigQuery side, so the
+#: withdrawn text never leaves the database even towards its own author.
+_EXPORT_FIELDS = (
+    "log_id", "occurred_at", "actor_id", "client", "use_category", "data_kinds",
+    "summary", "policy_row_ids", "withdrawn",
+)
+
+
+def _export_row(row: dict, withdrawn: bool) -> dict:
+    """Project a ledger row onto :data:`_EXPORT_FIELDS` (shared by both twins)."""
+    ts = row_ts(row)
+    return {
+        "log_id": str(row["log_id"]),
+        "occurred_at": ts.astimezone(UTC).isoformat() if ts is not None else None,
+        "actor_id": row.get("actor_id"),
+        "client": row.get("client"),
+        "use_category": row.get("use_category"),
+        "data_kinds": list(row.get("data_kinds") or []),
+        "summary": None if withdrawn else row.get("summary"),
+        "policy_row_ids": list(row.get("policy_row_ids") or []),
+        "withdrawn": bool(withdrawn),
+    }
+
 
 def _record_to_row(record: UsageRecord, log_id: str, occurred_at: datetime) -> dict:
     """Map a :class:`UsageRecord` to a ``usage_log`` row. Only ``summary`` carries content."""
@@ -240,7 +269,11 @@ def _same_content(row: dict, record: UsageRecord) -> bool:
 
 
 def _owns(
-    row: dict, actor_id: str | None, actor_raw: str | None, subject_hash: str | None
+    row: dict,
+    actor_id: str | None,
+    actor_raw: str | None,
+    subject_hash: str | None,
+    actor_not_before: datetime | None = None,
 ) -> bool:
     """In-process twin of the SQL ownership predicate in :meth:`BigQueryUsageLogStore.withdraw`.
 
@@ -249,7 +282,11 @@ def _owns(
     same rule with ``IS NOT NULL AND != ''`` so the two cannot drift.
     """
     if actor_id and row.get("actor_id") == actor_id:
-        return True
+        if actor_not_before is None:
+            return True
+        ts = row_ts(row)     # §4.1 bind floor; unreadable time → not provably the caller's
+        if ts is not None and ts >= actor_not_before:
+            return True
     if actor_raw and row.get("actor_raw") == actor_raw:
         return True
     # Rows written before this person's `sub` was bound to a person_id.
@@ -328,12 +365,19 @@ class InMemoryUsageLogStore:
         return max(hits)[1]
 
     def recent_summaries_for_actor(
-        self, viewer, actor_id: str, *, limit: int = 20
+        self,
+        viewer,
+        actor_id: str,
+        *,
+        limit: int = 20,
+        not_before: datetime | None = None,
     ) -> list[UsageSummary]:
         """Return recent summary-only rows for one actor.
 
         Caller identity is part of the method signature so no read path can ask for another
         actor's ledger by id alone. Withdrawn rows are excluded just like every other read.
+        ``not_before`` is the bind floor (SPEC_export_my_usage §4.1): rows that occurred
+        earlier are not returned — identical rule on the BigQuery twin.
         """
         if limit <= 0 or not _can_read_actor_summaries(viewer, actor_id):
             return []
@@ -341,9 +385,49 @@ class InMemoryUsageLogStore:
         rows = [
             row for row in self.rows
             if row["log_id"] not in withdrawn and row.get("actor_id") == actor_id
+            and (not_before is None or ((ts := row_ts(row)) is not None and ts >= not_before))
         ]
         rows.sort(key=lambda row: str(row.get("occurred_at", "")), reverse=True)
         return [_row_to_usage_summary(row) for row in rows[:limit]]
+
+    def rows_for_actor(
+        self,
+        actor_id: str,
+        *,
+        days: int,
+        limit: int,
+        now: datetime | None = None,
+        not_before: datetime | None = None,
+    ) -> list[dict]:
+        """One actor's own ledger rows for self-export (``export_my_usage``).
+
+        The actor is the only selector — there is no unit / steward widening here, unlike
+        :meth:`recent_summaries_for_actor`. The server passes ``viewer.person_id`` and nothing
+        else. Withdrawn rows are returned *marked* (``withdrawn=True``, ``summary=None``) so
+        the person can see that they withdrew something without the text coming back.
+        Newest first, ``(occurred_at, log_id)`` descending — the twin's ORDER BY.
+
+        ``not_before`` is the bind floor (SPEC_export_my_usage §4.1): rows that occurred before the
+        caller's current login was bound to this person_id are not returned — they may
+        belong to a previous holder of the same (recycled) address. The effective lower
+        bound is ``max(now - days, not_before)``, identical on both twins.
+        """
+        if not actor_id or limit <= 0 or days <= 0:
+            return []
+        cutoff = (now or _utcnow()) - timedelta(days=days)
+        if not_before is not None:
+            cutoff = max(cutoff, not_before)
+        withdrawn = self._withdrawn_ids()
+        hits = []
+        for row in self.rows:
+            if row.get("actor_id") != actor_id:
+                continue
+            ts = row_ts(row)
+            if ts is None or ts < cutoff:
+                continue
+            hits.append((ts, str(row["log_id"]), row))
+        hits.sort(key=lambda h: (h[0], h[1]), reverse=True)
+        return [_export_row(row, row["log_id"] in withdrawn) for _, _, row in hits[:limit]]
 
     def distinct_actors(self, window_days: int) -> set[str]:
         from datetime import timedelta
@@ -397,6 +481,7 @@ class InMemoryUsageLogStore:
         subject_hash: str | None = None,
         reason: str,
         at: datetime | None = None,
+        actor_not_before: datetime | None = None,
     ) -> bool:
         """R6: the *owner* withdraws their own row. False if it isn't theirs.
 
@@ -408,6 +493,12 @@ class InMemoryUsageLogStore:
         ``actor_id=NULL, actor_raw=<that hash>`` — without this they would be permanently
         un-withdrawable for exactly the population whose attribution was shakiest. It is still
         strictly owner-scoped: the same Google subject.
+
+        ``actor_not_before`` is the bind floor (SPEC_export_my_usage §4.1): a row matched
+        through ``actor_id`` only counts as the caller's if it occurred at/after that moment —
+        an earlier one may be a previous holder's under a recycled address. The
+        ``actor_raw``/``subject_hash`` branches are untouched: they match the caller's own
+        Google subject, which no address recycling can hand over.
         """
         if reason not in DELETION_REASONS:      # enforced on both sides (§3.3 の流儀)
             raise ValueError(f"reason must be one of {'|'.join(DELETION_REASONS)}")
@@ -416,7 +507,7 @@ class InMemoryUsageLogStore:
         for row in self.rows:
             if row["log_id"] != log_id:
                 continue
-            if not _owns(row, actor_id, actor_raw, subject_hash):
+            if not _owns(row, actor_id, actor_raw, subject_hash, actor_not_before):
                 return False
             self.withdrawals.append(
                 _withdrawal_row(log_id, actor_id, actor_raw, reason, at or _utcnow())
@@ -540,9 +631,18 @@ class BigQueryUsageLogStore:
         return None
 
     def recent_summaries_for_actor(
-        self, viewer, actor_id: str, *, limit: int = 20
+        self,
+        viewer,
+        actor_id: str,
+        *,
+        limit: int = 20,
+        not_before: datetime | None = None,
     ) -> list[UsageSummary]:
-        """Return recent summary-only rows for one actor."""
+        """Return recent summary-only rows for one actor.
+
+        ``not_before`` (bind floor, SPEC_export_my_usage §4.1) becomes a bound
+        ``l.occurred_at >= @since`` and is re-checked in-process.
+        """
         if limit <= 0:
             return []
         from google.cloud import bigquery
@@ -550,6 +650,7 @@ class BigQueryUsageLogStore:
         from waca_loop.retrieval.acl import person_where_clause
 
         person_gate, acl_params = person_where_clause(viewer, alias="p")
+        floor_sql = "AND l.occurred_at >= @since" if not_before is not None else ""
 
         sql = f"""
             SELECT
@@ -564,6 +665,7 @@ class BigQueryUsageLogStore:
             FROM `{self._settings.usage_log_table}` AS l
             WHERE l.actor_id = @actor_id
               AND l.{self._not_withdrawn}
+              {floor_sql}
               AND EXISTS (
                 SELECT 1
                 FROM `{self._settings.persons_table}` AS p
@@ -577,6 +679,8 @@ class BigQueryUsageLogStore:
             bigquery.ScalarQueryParameter("actor_id", "STRING", actor_id),
             bigquery.ScalarQueryParameter("limit", "INT64", limit),
         ]
+        if not_before is not None:
+            params.append(bigquery.ScalarQueryParameter("since", "TIMESTAMP", not_before))
         for name, value in acl_params.items():
             if isinstance(value, list | tuple | set | frozenset):
                 params.append(bigquery.ArrayQueryParameter(name, "STRING", sorted(value)))
@@ -591,7 +695,75 @@ class BigQueryUsageLogStore:
         return [
             summary for summary in (_row_to_usage_summary(dict(row)) for row in rows)
             if _can_read_actor_summaries(viewer, summary.actor_id or "")
+            and (not_before is None or summary.occurred_at >= not_before)
         ]
+
+    def rows_for_actor(
+        self,
+        actor_id: str,
+        *,
+        days: int,
+        limit: int,
+        now: datetime | None = None,
+        not_before: datetime | None = None,
+    ) -> list[dict]:
+        """BigQuery twin of :meth:`InMemoryUsageLogStore.rows_for_actor` (self-export).
+
+        The actor predicate is a bound parameter in the WHERE (never formatted into the SQL),
+        the window is on ``occurred_at`` — the partition column — so the scan is bounded, and
+        the SELECT list is :data:`_EXPORT_FIELDS` exactly. A withdrawn row's ``summary`` is
+        nulled inside the query, so the withdrawn text does not leave BigQuery. The rows are
+        re-checked in-process against ``actor_id`` (§3.3 の二重化): if the WHERE ever
+        regresses, another person's rows still do not reach the caller. ``not_before`` (the
+        bind floor) is folded into the same bound ``@since`` parameter and re-checked here.
+        """
+        if not actor_id or limit <= 0 or days <= 0:
+            return []
+        from google.cloud import bigquery
+
+        since = max((now or _utcnow()) - timedelta(days=days), self._scan_floor)
+        if not_before is not None:
+            since = max(since, not_before)
+        sql = f"""
+            SELECT
+              l.log_id,
+              l.occurred_at,
+              l.actor_id,
+              l.client,
+              l.use_category,
+              l.data_kinds,
+              IF(w.log_id IS NULL, l.summary, NULL) AS summary,
+              l.policy_row_ids,
+              w.log_id IS NOT NULL AS withdrawn
+            FROM `{self._settings.usage_log_table}` AS l
+            LEFT JOIN (
+              SELECT DISTINCT log_id FROM `{self._settings.usage_withdrawals_table}`
+            ) AS w ON w.log_id = l.log_id
+            WHERE l.actor_id = @actor_id
+              AND l.occurred_at >= @since
+            ORDER BY l.occurred_at DESC, l.log_id DESC
+            LIMIT @limit
+        """
+        rows = self._client.query(
+            sql,
+            job_config=bigquery.QueryJobConfig(
+                query_parameters=[
+                    bigquery.ScalarQueryParameter("actor_id", "STRING", actor_id),
+                    bigquery.ScalarQueryParameter("since", "TIMESTAMP", since),
+                    bigquery.ScalarQueryParameter("limit", "INT64", int(limit)),
+                ]
+            ),
+        ).result()
+        out = []
+        for row in rows:
+            got = dict(row)
+            if got.get("actor_id") != actor_id:       # §3.3: second gate, in-process
+                continue
+            ts = row_ts(got)
+            if ts is None or ts < since:              # the floor, re-checked in-process
+                continue
+            out.append(_export_row(got, bool(got.get("withdrawn"))))
+        return out
 
     @property
     def _not_withdrawn(self) -> str:
@@ -677,6 +849,7 @@ class BigQueryUsageLogStore:
         subject_hash: str | None = None,
         reason: str,
         at: datetime | None = None,
+        actor_not_before: datetime | None = None,
     ) -> bool:
         """R6 twin of :meth:`InMemoryUsageLogStore.withdraw` — ownership lives in the WHERE.
 
@@ -697,7 +870,8 @@ class BigQueryUsageLogStore:
             SELECT @wid, l.log_id, @actor_id, @actor_raw, @reason, @at, @at
             FROM `{self._settings.usage_log_table}` AS l
             WHERE l.log_id = @id
-              AND ((@actor_id IS NOT NULL AND @actor_id != '' AND l.actor_id = @actor_id)
+              AND ((@actor_id IS NOT NULL AND @actor_id != '' AND l.actor_id = @actor_id
+                    AND (@actor_not_before IS NULL OR l.occurred_at >= @actor_not_before))
                 OR (@actor_raw IS NOT NULL AND @actor_raw != '' AND l.actor_raw = @actor_raw)
                 OR (@subject_hash IS NOT NULL AND @subject_hash != ''
                     AND l.actor_raw = @subject_hash))
@@ -714,6 +888,9 @@ class BigQueryUsageLogStore:
                     bigquery.ScalarQueryParameter("actor_id", "STRING", actor_id),
                     bigquery.ScalarQueryParameter("actor_raw", "STRING", actor_raw),
                     bigquery.ScalarQueryParameter("subject_hash", "STRING", subject_hash),
+                    bigquery.ScalarQueryParameter(
+                        "actor_not_before", "TIMESTAMP", actor_not_before
+                    ),
                     bigquery.ScalarQueryParameter("reason", "STRING", reason),
                     bigquery.ScalarQueryParameter("at", "TIMESTAMP", stamp.isoformat()),
                 ]
