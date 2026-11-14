@@ -8,4 +8,4 @@ It exposes an MCP server that:
 See docs/SPEC_phase1.md. Code references spec sections inline as ``§X``.
 """
 
-__version__ = "1.0.0"
+__version__ = "1.1.0"

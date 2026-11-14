@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "waca-loop"
-version = "1.0.0"
+version = "1.1.0"
 description = "WACA Loop — an organizational AI-governance engine served as an MCP server (org vocabulary, AI-usage ledger, ACL-preserving retrieval, AI-policy delivery)."
 readme = "README.md"
 requires-python = ">=3.11"

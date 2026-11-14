@@ -112,14 +112,26 @@ class InMemoryPersonStore:
         # afterwards is indistinguishable from one an admin typed in directly. Mirrors the
         # BigQuery twin's `claimed_at` / `claim_source` columns.
         #
-        # Private on purpose. The BigQuery twin has no such attribute — the trail lives in
-        # two columns nothing SELECTs — so exposing it here would make the two stores'
-        # surfaces disagree, and code written against it would AttributeError in production.
-        # Tests reach in deliberately; production reads the trail with `bq query`.
+        # Private on purpose: the only public read of it is :meth:`bound_at`, which both
+        # twins implement (the BigQuery one SELECTs `claimed_at`). Tests reach in
+        # deliberately for `claim_source`; production reads that with `bq query`.
         self._claims: dict[str, ClaimTrace] = {}  # oauth_sub -> trace
 
     def resolve_person_id(self, subject: str) -> str | None:
         return self._identity_map.get(subject)
+
+    def bound_at(self, subject: str, person_id: str) -> datetime | None:
+        """When this ``sub`` was bound to ``person_id`` (``claimed_at``), else ``None`` (§5).
+
+        Keyed by the *current* sub AND the person, never by the person alone: another login
+        that once held the same person_id (a recycled address — SPEC_export_my_usage §4.1) must not
+        lend its earlier bind time. ``None`` means "unknown" — a row seeded directly into the
+        map (admin-bound, or bound before ``claimed_at`` existed) — and callers fail closed.
+        """
+        if not subject or self._identity_map.get(subject) != person_id:
+            return None
+        trace = self._claims.get(subject)
+        return trace["claimed_at"] if trace else None
 
     def _is_active(self, person_id: str) -> bool:
         """退職者(frozen)への引き当てを拒む (§5, store twin と同じ規則).
@@ -256,6 +268,40 @@ class BigQueryPersonStore:
         )
         rows = list(job.result())
         return rows[0]["person_id"] if rows else None
+
+    def bound_at(self, subject: str, person_id: str) -> datetime | None:
+        """BigQuery twin of :meth:`InMemoryPersonStore.bound_at` — ``claimed_at`` of this sub.
+
+        Both the sub and the person_id are bound parameters in the WHERE. If several rows
+        match (duplicate seed rows) and ANY of them has no ``claimed_at``, the answer is
+        ``None`` (unknown → the caller refuses); otherwise the LATEST time, which is the
+        stricter floor. Fail closed either way.
+        """
+        if not subject or not person_id:
+            return None
+        from google.cloud import bigquery
+
+        sql = f"""
+            SELECT claimed_at
+            FROM `{self._settings.identity_map_table}`
+            WHERE oauth_sub = @sub AND person_id = @pid
+        """
+        job = self._client.query(
+            sql,
+            job_config=bigquery.QueryJobConfig(
+                query_parameters=[
+                    bigquery.ScalarQueryParameter("sub", "STRING", subject),
+                    bigquery.ScalarQueryParameter("pid", "STRING", person_id),
+                ]
+            ),
+        )
+        times = [r["claimed_at"] for r in job.result()]
+        if not times or any(t is None for t in times):
+            return None
+        parsed = [
+            datetime.fromisoformat(t) if isinstance(t, str) else t for t in times
+        ]
+        return max(t if t.tzinfo else t.replace(tzinfo=UTC) for t in parsed)
 
     def claim_pending_registration(self, email: str, subject: str) -> str | None:
         """Bind a pre-registered person to their real ``sub`` on first login (§5, store twin).

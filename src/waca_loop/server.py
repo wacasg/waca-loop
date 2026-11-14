@@ -11,7 +11,7 @@ import logging
 import unicodedata
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any, Protocol
 
 from waca_loop.embeddings import Embedder
@@ -75,6 +75,10 @@ _K_CAPS = {
     "sfaq_feedback": 20,         # 〃 1つの問いにぶら下がる判断の本文の上限
     "improvement_tasks": 50,     # 〃 インシデント由来の一覧
     "improvement_requests": 50,  # 〃 製品への要望の一覧
+    "export_my_usage": 500,      # 〃 本人の台帳書き出し（遡りは別途 365 日まで）。
+                                 #   本人の記録しか出ないので ACL 上の越境は無いが、
+                                 #   外部 AI の文脈へ一度に運ぶ量の上限として置く。
+                                 #   break-glass の対象外（_NO_BREAK_GLASS）
 }
 # NOTE (R6): ``withdrawn_usage`` is deliberately **absent** from this table, so it lands
 # on ``_K_CAP_DEFAULT``. The values above are defaults; changing or adding one is the deploying
@@ -93,7 +97,39 @@ _K_CAP_DEFAULT = 10
 #
 # だから呼び出し側ではなく `_clamp_k` の中で締める。ここに載っているツールは、
 # 保有 unit の viewer が理由を書いても、監査 sink が生きていても、平常時上限を超えない。
-_NO_BREAK_GLASS = frozenset({"persons", "find_expert"})
+_NO_BREAK_GLASS = frozenset({"persons", "find_expert", "export_my_usage"})
+# export_my_usage は「本人の記録」以外を返さない道具で、他人の記録を束ねる正当な理由が
+# そもそも存在しない。理由欄も持たないが、それに頼らずここで締める（上の経緯と同じ）。
+
+#: export_my_usage の遡り日数の上限。台帳の保持期間（既定 730 日）より短く置き、
+#: 1回の呼び出しで運ぶ期間を区切る（FLOOR-02 の流儀）。
+_EXPORT_MY_USAGE_MAX_DAYS = 365
+_EXPORT_MY_USAGE_DEFAULT_DAYS = 30
+_EXPORT_MY_USAGE_DEFAULT_LIMIT = 200
+
+
+def _parse_ts(value: Any) -> datetime | None:
+    """An aware UTC datetime from a datetime / ISO string, or ``None`` if unreadable.
+
+    ``None`` is treated as "drop / don't know" by every caller (export_my_usage's floor).
+    """
+    if value is None or value == "":
+        return None
+    if isinstance(value, str):
+        try:
+            value = datetime.fromisoformat(value)
+        except ValueError:
+            return None
+    if not isinstance(value, datetime):
+        return None
+    return value if value.tzinfo else value.replace(tzinfo=UTC)
+
+
+#: CSV と各行に出す列。台帳の要約層だけ — 逐語の列は台帳に存在しない（§2.2③ / T6）。
+_EXPORT_MY_USAGE_COLUMNS = (
+    "log_id", "occurred_at", "client", "use_category", "data_kinds", "summary",
+    "policy_row_ids", "withdrawn",
+)
 
 # 申告本文の写し込みを見るときの、連続一致とみなす長さ。
 # 短くしすぎると助詞の並びで誤検知し、長くすると氏名＋連絡先が素通りする。
@@ -186,6 +222,10 @@ class _PersonSearch(Protocol):
     def roster_names(self) -> tuple[str, ...]:
         ...
 
+    # export_my_usage の結び付け時刻の床（SPEC_export_my_usage §4.1）。双子の両方にある。
+    def bound_at(self, subject: str, person_id: str) -> Any | None:
+        ...
+
 
 class _UsageStore(Protocol):
     """The ledger surface both twins must implement.
@@ -228,6 +268,7 @@ class _UsageStore(Protocol):
         subject_hash: str | None = ...,
         reason: str,
         at: Any | None = ...,
+        actor_not_before: Any | None = ...,
     ) -> bool:
         ...
 
@@ -235,6 +276,17 @@ class _UsageStore(Protocol):
         ...
 
     def get_withdrawn(self, log_id: str) -> dict | None:
+        ...
+
+    def rows_for_actor(
+        self,
+        actor_id: str,
+        *,
+        days: int,
+        limit: int,
+        now: Any | None = ...,
+        not_before: Any | None = ...,
+    ) -> list[dict]:
         ...
 
 
@@ -295,6 +347,8 @@ class ServerContext:
     ern_audit_store: Any | None = None       # ern_audit（append-only。読み出しツールは作らない）
     ern_half_life_days: int = 180            # E9: 実値は config 由来。ここは既定の写し
     ern_role_fallback: dict[str, tuple[str, ...]] = field(default_factory=dict)
+    # _owner_floor() の結果。1リクエスト（=1コンテキスト）につき引き当ては1回だけ。
+    _owner_floor_cache: tuple | None = field(default=None, init=False, repr=False)
 
     # --- WACA Loop ops guard helpers (SPEC_ops P0) ---
     def _trail(self, tool: str, detail: str | None = None) -> None:
@@ -864,6 +918,13 @@ class ServerContext:
             raise ValueError(
                 "log_id は usage_log の UUID を渡すこと（説明文や検索語は受け付けない）"
             ) from None
+        # §4.1 bind floor. A row attributed to this person_id but written before the current
+        # sub was bound may be a previous holder's (recycled address) — not withdrawable by
+        # this caller. Unknown bind time for an identity-mapped viewer → refuse outright.
+        actor_since, refused = self._owner_floor()
+        if refused is not None:
+            self._trail("usage_withdraw_refused", detail=f"{reason}:{log_id}")
+            raise ValueError(refused)
         actor_id, actor_raw = ledger_actor(self.viewer)
         # Rows written before this person's sub was bound to a person_id carry actor_raw only.
         # `Viewer.anonymous` already stores a hashed subject; a resolved viewer
@@ -877,6 +938,7 @@ class ServerContext:
             actor_raw=actor_raw,
             subject_hash=subject_hash,
             reason=reason,
+            actor_not_before=actor_since,
         )
         self._trail(
             "usage_withdrawn" if ok else "usage_withdraw_refused", detail=f"{reason}:{log_id}"
@@ -948,6 +1010,181 @@ class ServerContext:
         if row is None:
             raise ValueError(f"withdrawn usage row not found: {log_id}")
         return {"warning": self._WITHDRAWN_WARNING, "row": row}
+
+    _EXPORT_MY_USAGE_NOTICE = (
+        "本人の記録のみを書き出しています。他の人の記録はこのツールでは出せません。"
+        "台帳は要約のみで、会話の原文は保存していません。"
+        "取り下げた記録は withdrawn=true とし、要約は表示しません。"
+        "いまのログインを登録に結び付けた時点より前の記録は含みません（since 以降のみ）。"
+    )
+    _OWNER_FLOOR_UNKNOWN = (
+        "このログインを登録に結び付けた時刻が記録されていないため、"
+        "過去の記録を扱えません。運営担当（スチュワード）に連絡してください。"
+    )
+
+    # TOOL export_my_usage — 本人が自分の台帳記録だけを書き出す（§2.2③ 要約のみ・§3.3）。
+    def export_my_usage(
+        self,
+        days: int | None = _EXPORT_MY_USAGE_DEFAULT_DAYS,
+        limit: int | None = _EXPORT_MY_USAGE_DEFAULT_LIMIT,
+    ) -> dict:
+        """Return the caller's OWN usage-ledger rows (summary level) plus a CSV of them.
+
+        **There is no person/actor argument, on purpose.** The only selector is
+        ``self.viewer.person_id`` — the verified identity of the caller — so no argument a
+        client (or a prompt-injected model) can set can point this at someone else. A viewer
+        with no ``person_id`` or who is not an org member gets an empty export with a reason;
+        there is no fallback to ``actor_raw`` or anything else.
+
+        Ownership is checked twice (§3.3 の流儀): the store pins its query to the actor (a
+        bound parameter in the BigQuery WHERE), and the rows are re-filtered here.
+        ``limit`` goes through :meth:`_clamp_k` (``_K_CAPS["export_my_usage"]``, no
+        break-glass); ``days`` is bounded by ``_EXPORT_MY_USAGE_MAX_DAYS``.
+
+        Withdrawn rows (R6) come back marked ``withdrawn: true`` with ``summary`` omitted.
+        The call is trailed as ``usage_exported`` with counts only — never content.
+
+        **Bind floor (SPEC_export_my_usage §4.1).** When a person_id is derived from the
+        email address (e.g. course participants) and the ledger outlives a registration, a
+        recycled address hands the next holder the same person_id. Only rows that occurred at
+        or after the moment the caller's *current* sub was bound to that person_id are
+        returned:
+        ``since = max(now - days, bound_at)``, applied in the store (bound ``@since``) and
+        re-checked here. For a viewer resolved through ``oauth_identity_map``
+        (``viewer.identity_mapped`` — every production path) an unknown bind time refuses
+        with a reason; a viewer built in-process (tests / offline dev, no map to ask) gets
+        the day window only.
+        """
+        actor = self.viewer.person_id
+        base = {
+            "actor": actor,
+            "count": 0,
+            "rows": [],
+            "csv": self._usage_csv([]),
+            "notice": self._EXPORT_MY_USAGE_NOTICE,
+        }
+        if not actor:
+            self._trail("usage_exported", detail="refused=unresolved")
+            return {**base, "reason": "本人を確認できないため、書き出せる記録がありません。"}
+        if not self.viewer.is_org_member:
+            self._trail("usage_exported", detail="refused=not_org_member")
+            return {**base, "reason": "組織の利用者として登録されていないため、書き出せません。"}
+
+        if limit is None:   # 明示の null でも既定値（上限に化けさせない）
+            limit = _EXPORT_MY_USAGE_DEFAULT_LIMIT
+        k = self._clamp_k(limit, "export_my_usage")
+        try:
+            d = int(days) if days is not None else _EXPORT_MY_USAGE_DEFAULT_DAYS
+        except (TypeError, ValueError):
+            d = _EXPORT_MY_USAGE_DEFAULT_DAYS
+        d = max(1, min(d, _EXPORT_MY_USAGE_MAX_DAYS))
+
+        bound_at, refused = self._owner_floor()
+        if refused is not None:      # unknown bind time → fail closed (§4.1)
+            self._trail("usage_exported", detail="refused=bind_unknown")
+            return {**base, "reason": refused}
+        now = datetime.now(UTC)
+        since = now - timedelta(days=d)
+        if bound_at is not None:
+            since = max(since, bound_at)
+
+        raw = self.usage_store.rows_for_actor(
+            actor, days=d, limit=k, now=now, not_before=bound_at
+        )
+        rows = []
+        for r in raw:
+            if r.get("actor_id") != actor:   # §3.3: second gate — never another person's row
+                continue
+            ts = _parse_ts(r.get("occurred_at"))
+            if ts is None or ts < since:     # §4.1: second gate on the bind floor
+                continue
+            row = {c: r.get(c) for c in _EXPORT_MY_USAGE_COLUMNS}
+            row["withdrawn"] = bool(r.get("withdrawn"))
+            if row["withdrawn"]:
+                row.pop("summary", None)
+            rows.append(row)
+        rows = rows[:k]
+        self._trail("usage_exported", detail=f"days={d}:k={k}:n={len(rows)}")
+        return {
+            **base,
+            "days": d,
+            "limit": k,
+            "since": since.isoformat(),
+            "count": len(rows),
+            "rows": rows,
+            "csv": self._usage_csv(rows),
+        }
+
+    def _owner_floor(self) -> tuple[datetime | None, str | None]:
+        """The bind floor for every owner-facing ledger path: ``(since, refused_reason)``.
+
+        SPEC_export_my_usage §4.1. A person_id can be inherited through
+        a recycled address, so the caller's "own" ledger is only what happened at or after
+        their *current* sub was bound to it. Shared by ``export_my_usage``,
+        ``start_policy_workbench`` and ``request_log_deletion``:
+
+        - viewer not resolved through the identity map (tests / offline dev) → ``(None, None)``:
+          no floor, nothing to ask;
+        - identity-mapped and the bind time is known → ``(bound_at, None)``;
+        - identity-mapped and unknown (NULL, no store, lookup failure) → ``(None, reason)``:
+          the caller must fail closed.
+
+        Cached on the context — one lookup per request at most, and only on the paths that
+        need it (never per policy check).
+        """
+        if self._owner_floor_cache is None:
+            if not self.viewer.identity_mapped or not self.viewer.person_id:
+                got: tuple[datetime | None, str | None] = (None, None)
+            else:
+                bound_at = self._bound_at_for_viewer()
+                got = (bound_at, None) if bound_at else (None, self._OWNER_FLOOR_UNKNOWN)
+            self._owner_floor_cache = got
+        return self._owner_floor_cache
+
+    def _bound_at_for_viewer(self) -> datetime | None:
+        """``claimed_at`` of the CURRENT verified sub for ``viewer.person_id``, or ``None``.
+
+        ``None`` covers every "don't know": no person store, a store without ``bound_at``,
+        a lookup error, a NULL column. The caller treats all of them as a refusal.
+        """
+        lookup = getattr(self.person_store, "bound_at", None)
+        if lookup is None:
+            return None
+        try:
+            got = lookup(self.viewer.subject, self.viewer.person_id)
+        except Exception as exc:  # noqa: BLE001 — fail closed, class name only in the log
+            logger.warning("export_my_usage: bound_at failed: %s", exc.__class__.__name__)
+            return None
+        return _parse_ts(got)
+
+    @staticmethod
+    def _usage_csv(rows: list[dict]) -> str:
+        """CSV (UTF-8 text, header row) of :data:`_EXPORT_MY_USAGE_COLUMNS`.
+
+        List columns are joined with ``;``. A withdrawn row has an empty ``summary`` cell.
+        """
+        import csv
+        import io
+
+        buf = io.StringIO()
+        writer = csv.writer(buf, lineterminator="\n")
+        writer.writerow(_EXPORT_MY_USAGE_COLUMNS)
+        for row in rows:
+            out = []
+            for col in _EXPORT_MY_USAGE_COLUMNS:
+                v = row.get(col)
+                if isinstance(v, list | tuple):
+                    v = ";".join(str(x) for x in v)
+                elif isinstance(v, bool):
+                    v = "true" if v else "false"
+                elif v is None:
+                    v = ""
+                if isinstance(v, str) and v[:1] in ("=", "+", "-", "@", "\t", "\r"):
+                    # 表計算ソフトで式として動かさない（CSV injection）
+                    v = "'" + v
+                out.append(v)
+            writer.writerow(out)
+        return buf.getvalue()
 
     # TOOL get_pii_anonymization_guidance — 開発者の pii-anonymization-advisor スキルのMCP移植.
     def get_pii_anonymization_guidance(
@@ -1323,19 +1560,26 @@ class ServerContext:
         from waca_loop.policy.workbench import PolicyWorkbench, WorkbenchRequest
 
         max_logs = self._clamp_k(max_logs, "policy_workbench")
+        # §4.1 bind floor: an inherited person_id must not surface the previous holder's
+        # summaries or log_ids. Unknown bind time → no logs at all (guidance still served).
+        logs_since, logs_refused = self._owner_floor()
         workbench = PolicyWorkbench(
             policy_guides=self.policy_guide_store,
             adoption_map=self.adoption_map_store,
             usage_reader=self.usage_store,
         )
-        return workbench.start(
+        out = workbench.start(
             WorkbenchRequest(
                 viewer=self.viewer,
                 goal_hint_summary=goal_hint_summary,
                 artifact_type=artifact_type,
-                max_logs=max_logs,
+                max_logs=0 if logs_refused else max_logs,
+                logs_not_before=logs_since,
             )
         ).as_dict()
+        if logs_refused:
+            out["logs_withheld_reason"] = logs_refused
+        return out
 
     def _filter_personal_recommendations(self, rows: list[dict]) -> list[dict]:
         """Gate 2 for personal recommendation output (§3.3)."""
@@ -2765,6 +3009,22 @@ def build_mcp(
     )
     def get_withdrawn_usage(log_id: str, reason: str) -> dict:
         return _ctx().get_withdrawn_usage(log_id, reason)
+
+    @mcp.tool(
+        description=(
+            "**自分の**AI利用記録（台帳）を書き出す。「自分のログを出力して」と頼まれたら使う。"
+            "返すのは呼び出した本人の記録だけで、他の人の記録は指定する方法が無く出せない。"
+            "要約のみ（会話の原文は台帳に無い）。days は遡る日数（既定30・上限365）、"
+            "limit は件数（既定200・上限あり）。rows と同じ内容の csv（ヘッダ行つき）も返すので、"
+            "利用者がダウンロードできる形で渡してよい。取り下げた記録は withdrawn=true で要約なし。"
+            "呼ぶ前に、さかのぼる期間と件数を利用者に聞いてよい（指定が無ければ既定値）。"
+            "結果の csv は、利用者の求めに応じてファイル（CSV）として保存・提供してよい。"
+            "いまのログインを登録に結び付けた時点より前の記録は含まない（実際の下限は since）。"
+            "reason が返ったら、その内容を利用者にそのまま伝える。"
+        )
+    )
+    def export_my_usage(days: int | None = 30, limit: int | None = 200) -> dict:
+        return _ctx().export_my_usage(days, limit)
 
     @mcp.tool(
         description=(

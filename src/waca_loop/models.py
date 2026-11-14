@@ -121,6 +121,13 @@ class Viewer:
     is_partner: bool = False
     units: frozenset[str] = frozenset()
     allowed_sensitive_units: frozenset[str] = frozenset()
+    # True when ``person_id`` came from ``oauth_identity_map`` (``auth.identity.resolve_viewer``
+    # — both production entry points, hosted and stdio, build the viewer there). Tools whose
+    # answer depends on *when* this sub was bound to the person (``export_my_usage``,
+    # SPEC_export_my_usage §4.1) look the bind time up and fail closed when it is unknown.
+    # A viewer built directly in-process (tests, offline dev) has no identity map to ask,
+    # so stays False.
+    identity_mapped: bool = False
 
     @staticmethod
     def anonymous(subject: str) -> Viewer:
