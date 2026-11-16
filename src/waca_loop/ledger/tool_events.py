@@ -52,7 +52,8 @@ if TYPE_CHECKING:
 #                     the count only (no content crosses); `read` carries the one `log_id`
 #                     and is fail-closed, because "which private summary did the steward
 #                     read" must have an answer.
-# None of the four join _COVERAGE_TOOLS: coverage asks "is this person's AI use being
+#   usage_exported  — export_my_usage (detail = "days=<d>:k=<k>:n=<n>" or "refused=<why>").
+# None of these join _COVERAGE_TOOLS: coverage asks "is this person's AI use being
 # recorded", and a withdrawal is the opposite of a use.
 
 

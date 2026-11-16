@@ -121,6 +121,8 @@ class Viewer:
     is_partner: bool = False
     units: frozenset[str] = frozenset()
     allowed_sensitive_units: frozenset[str] = frozenset()
+    # True when person_id came from oauth_identity_map (resolve_viewer). SPEC_export_my_usage §4.1
+    identity_mapped: bool = False
 
     @staticmethod
     def anonymous(subject: str) -> Viewer:

@@ -50,6 +50,7 @@ PROBES: dict[str, dict] = {
     "list_improvement_requests": {},
     "list_improvement_tasks": {},
     "list_withdrawn_usage": {},
+    "export_my_usage": {},
     "get_withdrawn_usage": {"log_id": CANARY_ID, "reason": "audit"},
     "export_personal_recommendations": {},
     # --- 記録・宣言系 ---
@@ -100,6 +101,7 @@ REQUIRED: dict[str, frozenset[str]] = {
     "list_improvement_requests": frozenset(),
     "list_improvement_tasks": frozenset(),
     "list_withdrawn_usage": frozenset(),
+    "export_my_usage": frozenset(),
     "log_usage": frozenset({"use_category", "data_kinds", "summary", "client"}),
     "lookup_terms": frozenset({"query"}),
     "propose_candidates": frozenset({"items"}),
