@@ -112,14 +112,21 @@ class InMemoryPersonStore:
         # afterwards is indistinguishable from one an admin typed in directly. Mirrors the
         # BigQuery twin's `claimed_at` / `claim_source` columns.
         #
-        # Private on purpose. The BigQuery twin has no such attribute — the trail lives in
-        # two columns nothing SELECTs — so exposing it here would make the two stores'
-        # surfaces disagree, and code written against it would AttributeError in production.
-        # Tests reach in deliberately; production reads the trail with `bq query`.
+        # Private: read through :meth:`bound_at` (both twins). Tests reach in for `claim_source`.
         self._claims: dict[str, ClaimTrace] = {}  # oauth_sub -> trace
 
     def resolve_person_id(self, subject: str) -> str | None:
         return self._identity_map.get(subject)
+
+    def bound_at(self, subject: str, person_id: str) -> datetime | None:
+        """``claimed_at`` of this sub for ``person_id``; ``None`` if unknown.
+
+        Looked up by the sub AND the person, never by the person alone (SPEC_export_my_usage §4.1).
+        """
+        if not subject or self._identity_map.get(subject) != person_id:
+            return None
+        trace = self._claims.get(subject)
+        return trace["claimed_at"] if trace else None
 
     def _is_active(self, person_id: str) -> bool:
         """退職者(frozen)への引き当てを拒む (§5, store twin と同じ規則).
@@ -256,6 +263,37 @@ class BigQueryPersonStore:
         )
         rows = list(job.result())
         return rows[0]["person_id"] if rows else None
+
+    def bound_at(self, subject: str, person_id: str) -> datetime | None:
+        """BigQuery twin of :meth:`InMemoryPersonStore.bound_at`.
+
+        Several matching rows: any NULL → ``None``, otherwise the latest time.
+        """
+        if not subject or not person_id:
+            return None
+        from google.cloud import bigquery
+
+        sql = f"""
+            SELECT claimed_at
+            FROM `{self._settings.identity_map_table}`
+            WHERE oauth_sub = @sub AND person_id = @pid
+        """
+        job = self._client.query(
+            sql,
+            job_config=bigquery.QueryJobConfig(
+                query_parameters=[
+                    bigquery.ScalarQueryParameter("sub", "STRING", subject),
+                    bigquery.ScalarQueryParameter("pid", "STRING", person_id),
+                ]
+            ),
+        )
+        times = [r["claimed_at"] for r in job.result()]
+        if not times or any(t is None for t in times):
+            return None
+        parsed = [
+            datetime.fromisoformat(t) if isinstance(t, str) else t for t in times
+        ]
+        return max(t if t.tzinfo else t.replace(tzinfo=UTC) for t in parsed)
 
     def claim_pending_registration(self, email: str, subject: str) -> str | None:
         """Bind a pre-registered person to their real ``sub`` on first login (§5, store twin).

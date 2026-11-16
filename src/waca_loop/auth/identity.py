@@ -56,6 +56,7 @@ def resolve_viewer(
         is_org_member=is_org_member,
         is_partner=False,  # partner grants (circles) are not implemented; default false (§3.3)
         units=units,
+        identity_mapped=True,   # resolved through oauth_identity_map
     )
 
 

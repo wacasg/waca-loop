@@ -171,6 +171,7 @@ def test_caps_are_the_approved_values(tool, cap):
         "lookup_terms": 20, "search_sfaq": 20, "persons": 10,
         "sfaq_feedback": 20, "improvement_tasks": 50, "improvement_requests": 50,
         "find_expert": 3,
+        "export_my_usage": 500,
     }[tool]
 
 

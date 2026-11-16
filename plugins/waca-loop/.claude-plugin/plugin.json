@@ -1,7 +1,7 @@
 {
   "name": "waca-loop-guard",
   "description": "WACA Loop の運用ルールを機械で守らせる。毎ターンの台帳記録督促（UserPromptSubmit）とガード G1〜G5（G1 本番BQ書込ブロック / G2 三色語彙ゲート / G3 DDL承認リマインド / G4 レビュー未実施の検知 / G5 PII流出警告）を、リポジトリを問わず適用する。",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "author": { "name": "WACA Loop contributors" },
   "keywords": ["governance", "ledger", "guard", "waca-loop"]
 }
